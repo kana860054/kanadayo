@@ -1,0 +1,920 @@
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local Window = Rayfield:CreateWindow({
+   Name = "Ultimate Player GUI",
+   LoadingTitle = "Loading...",
+   LoadingSubtitle = "by You",
+})
+
+-- ===== タブ =====
+local Tab = Window:CreateTab("Player")
+local TpTab = Window:CreateTab("TP")
+local EspTab = Window:CreateTab("ESP")
+local CombatTab = Window:CreateTab("戦闘", 4483362458)
+
+-- ===== サービス (重複宣言禁止) =====
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+
+-- ===== 共通参照 =====
+local player = Players.LocalPlayer
+local LocalPlayer = player
+local mouse = player:GetMouse()
+local camera = workspace.CurrentCamera
+local Camera = camera
+local screenGui = Instance.new("ScreenGui", game.CoreGui)
+
+-- ===== Player タブ状態 =====
+local speedEnabled = false
+local currentSpeed = 16
+local infJumpEnabled = false
+local flyEnabled = false
+local flySpeed = 50
+local noclipEnabled = false
+local clickTpEnabled = false
+local tpKey = Enum.KeyCode.LeftShift
+local waitingForKey = false
+local espEnabled = false
+local espObjects = {}
+local tracerFrames = {}
+local pathEnabled = false
+local pathParts = {}
+local lastPos = nil
+local placeDistance = 4
+
+-- ===== フリーカメラ (自分停止) =====
+local freecamEnabled = false
+local freecamSpeedMultiplier = 1
+local freecamSensitivity = 0.4
+local freeCamPos = nil
+local lockedRootPos = nil
+local lockedRootOrient = CFrame.new()
+local yaw = 0
+local pitch = 0
+local savedCameraType = Enum.CameraType.Custom
+local savedAutoRotate = true
+local savedWalkSpeed = 16
+local savedJumpPower = 50
+local savedJumpHeight = 7.2
+
+-- ===== Aimbot =====
+local aimbotEnabled = false
+local aimKey = Enum.KeyCode.LeftShift
+local waitingForAimKey = false
+local fovRadius = 150
+
+-- ===== 戦闘タブ状態 =====
+local CombatSettings = {
+    Invisible = false,
+    KeybindEnabled = false,
+    InvisibleKey = Enum.KeyCode.G,
+    TracerEnabled = false,
+    FollowActive = false,
+    FollowMode = nil, -- "normal", "v2", "under"
+}
+
+local SelectedTarget = nil
+local OriginalFollowPos = nil
+local InvisibleParts = {}
+local CharacterRef = nil
+local HumanoidRef = nil
+local RootPartRef = nil
+local LastKnownCharacter = nil
+
+local combatNoclipConn = nil
+local combatOrigCanCollideCache = {}
+
+-- Drawing.new 非対応 Executor 用に pcall
+local combatTracerLine = nil
+local tracerAvailable = pcall(function()
+    combatTracerLine = Drawing.new("Line")
+    combatTracerLine.Visible = false
+    combatTracerLine.Thickness = 2
+    combatTracerLine.Transparency = 1
+    combatTracerLine.Color = Color3.fromRGB(0, 255, 255)
+end)
+
+local followNormalToggle = nil
+local followV2Toggle = nil
+local followUnderToggle = nil
+local combatTracerToggle = nil
+local freecamToggle = nil
+local tpToggle = nil
+
+-- =====================================================================
+-- 凍結ユーティリティ (Freecam 中のキャラ強制停止)
+-- =====================================================================
+local function ApplyFreezeTo(char)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        savedAutoRotate = hum.AutoRotate
+        savedWalkSpeed = hum.WalkSpeed
+        pcall(function() savedJumpPower = hum.JumpPower end)
+        pcall(function() savedJumpHeight = hum.JumpHeight end)
+        hum.AutoRotate = false
+        hum.WalkSpeed = 0
+        pcall(function() hum.JumpPower = 0 end)
+        pcall(function() hum.JumpHeight = 0 end)
+    end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        lockedRootPos = hrp.Position
+        lockedRootOrient = hrp.CFrame - hrp.Position
+    end
+end
+
+local function ReleaseFreezeFrom(char)
+    if not char then
+        lockedRootPos = nil
+        lockedRootOrient = CFrame.new()
+        return
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.AutoRotate = savedAutoRotate
+        hum.WalkSpeed = speedEnabled and currentSpeed or savedWalkSpeed
+        pcall(function() hum.JumpPower = savedJumpPower end)
+        pcall(function() hum.JumpHeight = savedJumpHeight end)
+    end
+    lockedRootPos = nil
+    lockedRootOrient = CFrame.new()
+end
+
+-- =====================================================================
+-- 戦闘タブ内部関数
+-- =====================================================================
+local function ToggleInvisible(enabled)
+    CombatSettings.Invisible = enabled
+    for _, part in ipairs(InvisibleParts) do
+        pcall(function() part.Transparency = enabled and 0.5 or 0 end)
+    end
+    Rayfield:Notify({
+        Title = "Invisible",
+        Content = enabled and "透明化 ON" or "透明化 OFF",
+        Duration = 3,
+    })
+end
+
+local function EnableCombatNoclip()
+    if combatNoclipConn then return end
+    if not CharacterRef then return end
+    combatOrigCanCollideCache = {}
+    for _, part in ipairs(CharacterRef:GetDescendants()) do
+        if part:IsA("BasePart") then
+            combatOrigCanCollideCache[part] = part.CanCollide
+        end
+    end
+    combatNoclipConn = RunService.Stepped:Connect(function()
+        if not CharacterRef then return end
+        for _, part in ipairs(CharacterRef:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end)
+end
+
+local function DisableCombatNoclip()
+    if combatNoclipConn then
+        combatNoclipConn:Disconnect()
+        combatNoclipConn = nil
+    end
+    if not CharacterRef then return end
+    for part, can in pairs(combatOrigCanCollideCache) do
+        if part and part.Parent then
+            pcall(function() part.CanCollide = can end)
+        end
+    end
+    table.clear(combatOrigCanCollideCache)
+end
+
+local function GetHRP(char) return char and char:FindFirstChild("HumanoidRootPart") end
+local function GetHum(char) return char and char:FindFirstChildOfClass("Humanoid") end
+
+local function StartFollow(mode)
+    if not SelectedTarget or not SelectedTarget.Character then return end
+    CombatSettings.FollowActive = true
+    CombatSettings.FollowMode = mode
+    local myHRP = GetHRP(player.Character)
+    if myHRP and not OriginalFollowPos then
+        OriginalFollowPos = myHRP.CFrame
+    end
+end
+
+local function StopFollow()
+    CombatSettings.FollowActive = false
+    CombatSettings.FollowMode = nil
+    local myHRP = GetHRP(player.Character)
+    local myHum = GetHum(player.Character)
+    if myHRP and OriginalFollowPos then
+        myHRP.CFrame = OriginalFollowPos
+        if myHum then myHum.PlatformStand = false end
+        DisableCombatNoclip()
+        OriginalFollowPos = nil
+    end
+end
+
+-- =====================================================================
+-- Player タブ UI
+-- =====================================================================
+Tab:CreateToggle({ Name = "スピード", CurrentValue = false, Callback = function(v) speedEnabled = v end })
+Tab:CreateSlider({ Name = "足の速さ", Range = {16,150}, Increment = 1, CurrentValue = 16, Callback = function(v) currentSpeed = v end })
+Tab:CreateToggle({ Name = "無限ジャンプ", CurrentValue = false, Callback = function(v) infJumpEnabled = v end })
+Tab:CreateToggle({ Name = "フライ", CurrentValue = false, Callback = function(v) flyEnabled = v end })
+Tab:CreateSlider({ Name = "フライ速度", Range = {10,200}, Increment = 5, CurrentValue = 50, Callback = function(v) flySpeed = v end })
+Tab:CreateToggle({ Name = "壁貫通", CurrentValue = false, Callback = function(v) noclipEnabled = v end })
+
+freecamToggle = Tab:CreateToggle({
+    Name = "フリーカメラ(自分停止)",
+    CurrentValue = false,
+    Callback = function(v)
+        freecamEnabled = v
+        if v then
+            savedCameraType = camera.CameraType
+            local look = camera.CFrame.LookVector
+            yaw = math.atan2(-look.X, -look.Z)
+            pitch = math.asin(look.Y)
+            ApplyFreezeTo(player.Character)
+            freeCamPos = camera.CFrame.Position
+            camera.CameraType = Enum.CameraType.Scriptable
+            -- 戦闘タブの追従を強制 OFF
+            StopFollow()
+            if followNormalToggle then followNormalToggle:Set(false) end
+            if followV2Toggle then followV2Toggle:Set(false) end
+            if followUnderToggle then followUnderToggle:Set(false) end
+        else
+            ReleaseFreezeFrom(player.Character)
+            camera.CameraType = savedCameraType or Enum.CameraType.Custom
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+            freeCamPos = nil
+        end
+    end,
+})
+
+Tab:CreateSlider({
+    Name = "フリーカメラ速度", Range = {1, 10}, Increment = 1, CurrentValue = 1,
+    Callback = function(v) freecamSpeedMultiplier = v end,
+})
+Tab:CreateSlider({
+    Name = "フリーカメラ感度", Range = {1, 10}, Increment = 1, CurrentValue = 4,
+    Callback = function(v) freecamSensitivity = v * 0.1 end,
+})
+Tab:CreateToggle({
+    Name = "足場生成", CurrentValue = false,
+    Callback = function(v)
+        pathEnabled = v
+        lastPos = nil
+    end,
+})
+Tab:CreateButton({
+    Name = "足場削除",
+    Callback = function()
+        for _, p in pairs(pathParts) do
+            if p and p.Parent then p:Destroy() end
+        end
+        pathParts = {}
+    end,
+})
+
+-- =====================================================================
+-- TP タブ UI
+-- =====================================================================
+tpToggle = TpTab:CreateToggle({
+    Name = "クリックTP", CurrentValue = false,
+    Callback = function(v) clickTpEnabled = v end,
+})
+TpTab:CreateButton({
+    Name = "TPキー変更",
+    Callback = function() waitingForKey = true end,
+})
+
+-- =====================================================================
+-- ESP タブ UI
+-- =====================================================================
+EspTab:CreateToggle({
+    Name = "ESP", CurrentValue = false,
+    Callback = function(v) espEnabled = v end,
+})
+EspTab:CreateToggle({
+    Name = "Aimbot", CurrentValue = false,
+    Callback = function(v) aimbotEnabled = v end,
+})
+EspTab:CreateButton({
+    Name = "Aimbotキー変更",
+    Callback = function() waitingForAimKey = true end,
+})
+
+-- =====================================================================
+-- 戦闘タブ UI（完全版）
+-- =====================================================================
+CombatTab:CreateButton({
+    Name = "選択中のプレイヤーへ TP",
+    Callback = function()
+        if not SelectedTarget or not SelectedTarget.Character then
+            Rayfield:Notify({ Title = "エラー", Content = "ターゲットが無効です", Duration = 3 })
+            return
+        end
+        local targetHRP = GetHRP(SelectedTarget.Character)
+        if targetHRP then
+            player.Character:PivotTo(targetHRP.CFrame * CFrame.new(0, 0, 3))
+        end
+    end,
+})
+
+followNormalToggle = CombatTab:CreateToggle({
+    Name = "普通の張り付き",
+    Callback = function(v)
+        if freecamEnabled then
+            Rayfield:Notify({ Title = "エラー", Content = "フリーカメラ中は無効", Duration = 2 })
+            return
+        end
+        if v then StartFollow("normal") else StopFollow() end
+    end,
+})
+
+followV2Toggle = CombatTab:CreateToggle({
+    Name = "張り付き v2 (BloxFruit対応)",
+    Callback = function(v)
+        if freecamEnabled then
+            Rayfield:Notify({ Title = "エラー", Content = "フリーカメラ中は無効", Duration = 2 })
+            return
+        end
+        if v then StartFollow("v2") else StopFollow() end
+    end,
+})
+
+followUnderToggle = CombatTab:CreateToggle({
+    Name = "下向き張り付き",
+    Callback = function(v)
+        if freecamEnabled then
+            Rayfield:Notify({ Title = "エラー", Content = "フリーカメラ中は無効", Duration = 2 })
+            return
+        end
+        if v then StartFollow("under") else StopFollow() end
+    end,
+})
+
+combatTracerToggle = CombatTab:CreateToggle({
+    Name = "ターゲット線 (Tracer)",
+    Callback = function(v)
+        CombatSettings.TracerEnabled = v
+        if not v and combatTracerLine then combatTracerLine.Visible = false end
+    end,
+})
+
+CombatTab:CreateToggle({
+    Name = "Invisible (ゲームによっては無効)",
+    CurrentValue = false,
+    Callback = function(v) ToggleInvisible(v) end,
+})
+
+CombatTab:CreateToggle({
+    Name = "Invisible キー切替を有効化",
+    CurrentValue = false,
+    Callback = function(v) CombatSettings.KeybindEnabled = v end,
+})
+
+CombatTab:CreateInput({
+    Name = "Invisible キー (例: G)",
+    PlaceholderText = "例: G",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(text)
+        local upper = text:upper()
+        local key = Enum.KeyCode[upper]
+        if key then
+            CombatSettings.InvisibleKey = key
+            Rayfield:Notify({
+                Title = "設定完了",
+                Content = "Invisibleキーを " .. upper .. " に変更しました",
+                Duration = 3,
+            })
+        else
+            Rayfield:Notify({ Title = "エラー", Content = "無効なキー名です", Duration = 3 })
+        end
+    end,
+})
+
+-- プレイヤー一覧
+CombatTab:CreateSection("プレイヤー一覧")
+local PlayerButtons = {}
+
+local function GetHP(plr_)
+    local hum = plr_.Character and plr_.Character:FindFirstChildOfClass("Humanoid")
+    return (hum and math.floor(hum.Health) or 0), (hum and math.floor(hum.MaxHealth) or 0)
+end
+
+local function CreateTargetButton(plr_)
+    local hp, maxhp = GetHP(plr_)
+    local btn = CombatTab:CreateButton({
+        Name = plr_.Name .. " [" .. hp .. "/" .. maxhp .. "]",
+        Callback = function()
+            SelectedTarget = plr_
+            Rayfield:Notify({
+                Title = "ターゲット選択",
+                Content = plr_.Name .. " を選択しました",
+                Duration = 3,
+            })
+        end,
+    })
+    PlayerButtons[plr_] = btn
+end
+
+local function RefreshPlayerList()
+    local active = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            active[p] = true
+            if not PlayerButtons[p] then CreateTargetButton(p) end
+        end
+    end
+    for plr_, btn in pairs(PlayerButtons) do
+        if not active[plr_] then
+            pcall(function() btn:Remove() end)
+            PlayerButtons[plr_] = nil
+        end
+    end
+end
+
+RefreshPlayerList()
+Players.PlayerAdded:Connect(RefreshPlayerList)
+Players.PlayerRemoving:Connect(RefreshPlayerList)
+
+-- =====================================================================
+-- 戦闘タブ: キャラ参照更新 (リスポーン対応)
+-- =====================================================================
+local function TryUpdateCharacterRefs()
+    local currentChar = player.Character
+    if currentChar == LastKnownCharacter then return end
+
+    if not currentChar or not currentChar.Parent then
+        CharacterRef = nil
+        HumanoidRef = nil
+        RootPartRef = nil
+        InvisibleParts = {}
+        LastKnownCharacter = nil
+        return
+    end
+
+    task.wait(0.1)
+    if not currentChar.Parent then return end
+
+    CharacterRef = currentChar
+    HumanoidRef = currentChar:FindFirstChild("Humanoid")
+    RootPartRef = currentChar:FindFirstChild("HumanoidRootPart")
+
+    if not HumanoidRef or not RootPartRef then
+        CharacterRef = nil
+        return
+    end
+
+    InvisibleParts = {}
+    for _, obj in ipairs(currentChar:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Transparency == 0 then
+            table.insert(InvisibleParts, obj)
+        end
+    end
+
+    if CombatSettings.Invisible then
+        for _, part in ipairs(InvisibleParts) do
+            pcall(function() part.Transparency = 0.5 end)
+        end
+    end
+
+    LastKnownCharacter = currentChar
+end
+
+TryUpdateCharacterRefs()
+RunService.Heartbeat:Connect(TryUpdateCharacterRefs)
+
+-- =====================================================================
+-- Heartbeat 群
+-- =====================================================================
+RunService.Heartbeat:Connect(function()
+    local char = player.Character
+    if char and char:FindFirstChild("Humanoid") then
+        if freecamEnabled or lockedRootPos then
+            char.Humanoid.WalkSpeed = 0
+        else
+            char.Humanoid.WalkSpeed = speedEnabled and currentSpeed or 16
+        end
+    end
+end)
+
+-- 足場生成
+RunService.Heartbeat:Connect(function()
+    if not pathEnabled then return end
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local pos = char.HumanoidRootPart.Position
+    if not lastPos then lastPos = pos return end
+    if (pos - lastPos).Magnitude >= placeDistance then
+        lastPos = pos
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(4, 1, 4)
+        part.Position = Vector3.new(pos.X, pos.Y - 3, pos.Z)
+        part.Anchored = true
+        part.CanCollide = true
+        part.Material = Enum.Material.Neon
+        part.Color = Color3.fromRGB(0, 255, 255)
+        part.Parent = workspace
+        table.insert(pathParts, part)
+        Debris:AddItem(part, 5)
+    end
+end)
+
+-- Invisible 位置ハック (Freecam 中はスキップ)
+local SAFE_DROP_Y = -200000
+RunService.Heartbeat:Connect(function()
+    if not CombatSettings.Invisible then return end
+    if freecamEnabled then return end
+    if not RootPartRef or not RootPartRef.Parent or not HumanoidRef then return end
+
+    local originalCF = RootPartRef.CFrame
+    local camOffset = HumanoidRef.CameraOffset
+    local hiddenCF = originalCF * CFrame.new(0, SAFE_DROP_Y, 0)
+
+    RootPartRef.CFrame = hiddenCF
+    HumanoidRef.CameraOffset = hiddenCF:ToObjectSpace(CFrame.new(originalCF.Position)).Position
+
+    RunService.RenderStepped:Wait()
+
+    if RootPartRef and RootPartRef.Parent then
+        RootPartRef.CFrame = originalCF
+        HumanoidRef.CameraOffset = camOffset
+    end
+end)
+
+-- プレイヤー一覧 HP 更新
+RunService.Heartbeat:Connect(function()
+    for plr_, btn in pairs(PlayerButtons) do
+        if btn ~= nil then
+            local hp, maxhp = GetHP(plr_)
+            pcall(function()
+                btn:Set(plr_.Name .. " [" .. hp .. "/" .. maxhp .. "]")
+            end)
+        end
+    end
+end)
+
+-- =====================================================================
+-- Stepped 群
+-- =====================================================================
+RunService.Stepped:Connect(function()
+    if noclipEnabled then
+        local char = player.Character
+        if char then
+            for _, p in pairs(char:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = false end
+            end
+        end
+    end
+
+    if lockedRootPos then
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            local hrp = char.HumanoidRootPart
+            hrp.CFrame = CFrame.new(lockedRootPos) * lockedRootOrient
+            hrp.Velocity = Vector3.new()
+            hrp.RotVelocity = Vector3.new()
+            pcall(function() hrp.AssemblyLinearVelocity = Vector3.new() end)
+            pcall(function() hrp.AssemblyAngularVelocity = Vector3.new() end)
+        end
+    end
+end)
+
+-- =====================================================================
+-- RenderStepped 群
+-- =====================================================================
+local bv, bg
+RunService.RenderStepped:Connect(function()
+    -- Fly (Freecam 中は OFF)
+    if not freecamEnabled then
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            local hrp = char.HumanoidRootPart
+            if flyEnabled then
+                if not bv then
+                    bv = Instance.new("BodyVelocity", hrp)
+                    bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+                    bg = Instance.new("BodyGyro", hrp)
+                    bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+                end
+                local cam = workspace.CurrentCamera
+                local dir = Vector3.new()
+                if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir = dir + cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir = dir - cam.CFrame.LookVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir = dir - cam.CFrame.RightVector end
+                if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir = dir + cam.CFrame.RightVector end
+                bv.Velocity = dir * flySpeed
+                bg.CFrame = cam.CFrame
+            else
+                if bv then bv:Destroy() bv = nil end
+                if bg then bg:Destroy() bg = nil end
+            end
+        end
+    else
+        if bv then bv:Destroy() bv = nil end
+        if bg then bg:Destroy() bg = nil end
+    end
+end)
+
+-- フリーカメラ視点 + 移動
+RunService.RenderStepped:Connect(function()
+    if not freecamEnabled then return end
+    if not freeCamPos then freeCamPos = camera.CFrame.Position end
+
+    local move = Vector3.new()
+    local rot = CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
+    local fwd = rot.LookVector
+    local rgt = rot.RightVector
+    local upv = Vector3.new(0, 1, 0)
+
+    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - fwd end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + rgt end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + upv end
+    end
+
+    local BASE = 0.5
+    freeCamPos = freeCamPos + move * BASE * freecamSpeedMultiplier
+    camera.CFrame = CFrame.new(freeCamPos) * CFrame.fromEulerAnglesYXZ(pitch, yaw, 0)
+end)
+
+-- 戦闘タブ: Follow + Tracer (Freecam 中は停止)
+RunService.RenderStepped:Connect(function(dt)
+    if freecamEnabled then
+        if combatTracerLine then combatTracerLine.Visible = false end
+        return
+    end
+
+    if not CharacterRef or not HumanoidRef or not RootPartRef then return end
+
+    if CombatSettings.FollowActive then
+        RootPartRef.AssemblyLinearVelocity = Vector3.zero
+    end
+
+    if CombatSettings.FollowActive and SelectedTarget and SelectedTarget.Character then
+        local targetHRP = GetHRP(SelectedTarget.Character)
+        if targetHRP then
+            if CombatSettings.FollowMode == "normal" then
+                RootPartRef.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 7)
+            elseif CombatSettings.FollowMode == "v2" then
+                local delta = targetHRP.Position - RootPartRef.Position
+                local distV = delta.Magnitude
+                local speedV = 300
+                if distV > 200 then
+                    RootPartRef.CFrame = RootPartRef.CFrame:Lerp(
+                        CFrame.new(RootPartRef.Position + delta.Unit * speedV * dt), 1
+                    )
+                else
+                    RootPartRef.CFrame = RootPartRef.CFrame:Lerp(
+                        targetHRP.CFrame * CFrame.new(0, 0, 7), 0.2
+                    )
+                end
+            elseif CombatSettings.FollowMode == "under" then
+                if not combatNoclipConn then EnableCombatNoclip() end
+                HumanoidRef.PlatformStand = true
+                local goal = targetHRP.CFrame * CFrame.new(0, -12, 0) * CFrame.Angles(math.rad(90), 0, 0)
+                RootPartRef.CFrame = RootPartRef.CFrame:Lerp(goal, 0.3)
+            end
+        end
+    else
+        if HumanoidRef then HumanoidRef.PlatformStand = false end
+        if combatNoclipConn then DisableCombatNoclip() end
+    end
+
+    -- Combat Tracer
+    if CombatSettings.TracerEnabled
+        and SelectedTarget
+        and SelectedTarget.Character
+        and tracerAvailable
+        and combatTracerLine then
+        local targetHRP = GetHRP(SelectedTarget.Character)
+        if targetHRP and RootPartRef then
+            local p1, on1 = camera:WorldToViewportPoint(RootPartRef.Position)
+            local p2, on2 = camera:WorldToViewportPoint(targetHRP.Position)
+            combatTracerLine.Visible = on1 and on2
+            if on1 and on2 then
+                combatTracerLine.From = Vector2.new(p1.X, p1.Y)
+                combatTracerLine.To = Vector2.new(p2.X, p2.Y)
+            end
+        else
+            combatTracerLine.Visible = false
+        end
+    else
+        if combatTracerLine then combatTracerLine.Visible = false end
+    end
+end)
+
+-- ESP
+RunService.RenderStepped:Connect(function()
+    if not espEnabled then
+        for _, v in pairs(espObjects) do if v.gui then v.gui:Destroy() end end
+        for _, v in pairs(tracerFrames) do if v then v:Destroy() end end
+        espObjects = {}
+        tracerFrames = {}
+        return
+    end
+
+    for _, plr_ in pairs(Players:GetPlayers()) do
+        if plr_ ~= player
+            and plr_.Character
+            and plr_.Character:FindFirstChild("Head")
+            and plr_.Character:FindFirstChild("Humanoid") then
+
+            local head = plr_.Character.Head
+            local hum = plr_.Character.Humanoid
+            local myChar = player.Character
+
+            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
+                local dist = (myChar.HumanoidRootPart.Position - head.Position).Magnitude
+                local hp = hum.Health / hum.MaxHealth
+
+                if not espObjects[plr_] then
+                    local bill = Instance.new("BillboardGui")
+                    bill.Size = UDim2.new(0, 150, 0, 40)
+                    bill.AlwaysOnTop = true
+
+                    local txt = Instance.new("TextLabel")
+                    txt.Size = UDim2.new(1, 0, 0.5, 0)
+                    txt.BackgroundTransparency = 1
+                    txt.TextColor3 = Color3.fromRGB(255, 50, 50)
+                    txt.TextSize = 11
+                    txt.TextStrokeTransparency = 0
+                    txt.Parent = bill
+
+                    local hpBg = Instance.new("Frame")
+                    hpBg.Size = UDim2.new(1, 0, 0.08, 0)
+                    hpBg.Position = UDim2.new(0, 0, 0.65, 0)
+                    hpBg.BackgroundColor3 = Color3.new(0, 0, 0)
+                    hpBg.Parent = bill
+
+                    local hpBar = Instance.new("Frame")
+                    hpBar.Parent = hpBg
+
+                    bill.Parent = head
+                    espObjects[plr_] = { gui = bill, text = txt, hp = hpBar }
+                end
+
+                espObjects[plr_].text.Text = plr_.Name .. " [" .. math.floor(dist) .. "m]"
+                espObjects[plr_].hp.Size = UDim2.new(hp, 0, 1, 0)
+                espObjects[plr_].hp.BackgroundColor3 =
+                    Color3.fromRGB(255 * (1 - hp), 255 * hp, 0)
+
+                if not tracerFrames[plr_] then
+                    local line = Instance.new("Frame")
+                    line.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+                    line.BorderSizePixel = 0
+                    line.AnchorPoint = Vector2.new(0.5, 0.5)
+                    line.Parent = screenGui
+                    tracerFrames[plr_] = line
+                end
+
+                local pos, onScreen = camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local start = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+                    local finish = Vector2.new(pos.X, pos.Y)
+                    local center = (start + finish) / 2
+                    local dir = finish - start
+                    local length = dir.Magnitude
+                    local angle = math.deg(math.atan2(dir.Y, dir.X))
+
+                    tracerFrames[plr_].Size = UDim2.new(0, length, 0, 1)
+                    tracerFrames[plr_].Position = UDim2.new(0, center.X, 0, center.Y)
+                    tracerFrames[plr_].Rotation = angle
+                    tracerFrames[plr_].Visible = true
+                else
+                    tracerFrames[plr_].Visible = false
+                end
+            end
+        end
+    end
+end)
+
+-- Aimbot
+local function GetClosestPlayer()
+    local closest = nil
+    local shortestDistance = fovRadius
+    local center = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+
+    for _, plr_ in pairs(Players:GetPlayers()) do
+        if plr_ ~= player
+            and plr_.Character
+            and plr_.Character:FindFirstChild("HumanoidRootPart")
+            and plr_.Character:FindFirstChild("Humanoid") then
+
+            local hum = plr_.Character.Humanoid
+            if hum.Health > 0 then
+                local root = plr_.Character.HumanoidRootPart
+                local pos, onScreen = camera:WorldToViewportPoint(root.Position)
+                if onScreen then
+                    local dist = (Vector2.new(pos.X, pos.Y) - center).Magnitude
+                    if dist <= shortestDistance then
+                        shortestDistance = dist
+                        closest = plr_
+                    end
+                end
+            end
+        end
+    end
+    return closest
+end
+
+RunService.RenderStepped:Connect(function()
+    if not aimbotEnabled then return end
+    if UserInputService:IsKeyDown(aimKey) then
+        local target = GetClosestPlayer()
+        if target
+            and target.Character
+            and target.Character:FindFirstChild("HumanoidRootPart") then
+            local root = target.Character.HumanoidRootPart
+            camera.CFrame = CFrame.lookAt(camera.CFrame.Position, root.Position)
+        end
+    end
+end)
+
+-- =====================================================================
+-- 入力系
+-- =====================================================================
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+
+    -- Freecam: 右クリック押し込みでマウスロック
+    if freecamEnabled and input.UserInputType == Enum.UserInputType.MouseButton2 then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+        return
+    end
+
+    -- Invisible キー切替
+    if CombatSettings.KeybindEnabled
+        and input.UserInputType == Enum.UserInputType.Keyboard
+        and input.KeyCode == CombatSettings.InvisibleKey then
+        ToggleInvisible(not CombatSettings.Invisible)
+        return
+    end
+
+    -- Aimbot キー再バインド
+    if waitingForAimKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            aimKey = input.KeyCode
+            waitingForAimKey = false
+        end
+        return
+    end
+
+    -- TP キー再バインド
+    if waitingForKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            tpKey = input.KeyCode
+            waitingForKey = false
+        end
+        return
+    end
+
+    -- クリック TP トグル
+    if input.KeyCode == tpKey then
+        clickTpEnabled = not clickTpEnabled
+        if tpToggle then tpToggle:Set(clickTpEnabled) end
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input, gp)
+    if not freecamEnabled or gp then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+    if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then return end
+
+    yaw = yaw - input.Delta.X * freecamSensitivity * 0.01
+    pitch = pitch - input.Delta.Y * freecamSensitivity * 0.01
+    local lim = math.rad(89)
+    if pitch > lim then pitch = lim end
+    if pitch < -lim then pitch = -lim end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gp)
+    if not freecamEnabled then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 then
+        UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+    end
+end)
+
+-- 無限ジャンプ
+UserInputService.JumpRequest:Connect(function()
+    if infJumpEnabled then
+        local char = player.Character
+        if char and char:FindFirstChild("Humanoid") then
+            char.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+-- クリックTP
+mouse.Button1Down:Connect(function()
+    if clickTpEnabled then
+        local char = player.Character
+        if char and char:FindFirstChild("HumanoidRootPart") then
+            char:MoveTo(mouse.Hit.Position)
+        end
+    end
+end)
