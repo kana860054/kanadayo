@@ -977,7 +977,7 @@ do
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
         rayParams.FilterDescendantsInstances = {char}
 
-        local rayDistance = 1000
+        local rayDistance = 5000
         local result = workspace:Raycast(ray.Origin, ray.Direction * rayDistance, rayParams)
 
         if result then
