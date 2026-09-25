@@ -977,13 +977,82 @@ do
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
         rayParams.FilterDescendantsInstances = {char}
 
-        local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
+        local rayDistance = 1000
+        local result = workspace:Raycast(ray.Origin, ray.Direction * rayDistance, rayParams)
+
         if result then
+            -- 地面や壁などに当たった場合は、その位置へTP
             char:MoveTo(result.Position)
+        else
+            -- 何もない空中・空を向いている場合もTPできるようにする。
+            -- レイが何にも当たらなかったときは、視線方向へ指定距離だけ進んだ位置へTP。
+            local targetPosition = ray.Origin + ray.Direction * rayDistance
+            char:MoveTo(targetPosition)
         end
     end
 
-    mobileTpButton.Activated:Connect(MobileTeleportToCenter)
+    -- TPボタンを長押しして好きな場所へ移動できるようにする。
+    -- タッチ：指でドラッグ / PC：マウスでドラッグ
+    local dragging = false
+    local dragInput = nil
+    local dragStart = nil
+    local startPos = nil
+    local dragMoved = false
+    local dragJustEnded = false
+
+    mobileTpButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragMoved = false
+            dragStart = input.Position
+            startPos = mobileTpButton.Position
+
+            if input.UserInputType == Enum.UserInputType.Touch then
+                dragInput = input
+            else
+                dragInput = nil
+            end
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    dragJustEnded = dragMoved
+                    if dragMoved then
+                        task.delay(0.15, function()
+                            dragJustEnded = false
+                        end)
+                    end
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+            and input ~= dragInput then
+            return
+        end
+
+        local delta = input.Position - dragStart
+        if math.abs(delta.X) > 5 or math.abs(delta.Y) > 5 then
+            dragMoved = true
+        end
+
+        mobileTpButton.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end)
+
+    mobileTpButton.Activated:Connect(function()
+        -- ドラッグ操作だった場合はTPしない
+        if dragJustEnded then return end
+        MobileTeleportToCenter()
+    end)
 
     -- タッチ端末以外ではスマホ用ボタンを出さない。
     -- トグルをONにしたときだけ表示する。
