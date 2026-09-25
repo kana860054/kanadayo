@@ -33,6 +33,9 @@ local flyEnabled = false
 local flySpeed = 50
 local noclipEnabled = false
 local clickTpEnabled = false
+local mobileClickTpEnabled = false
+local mobileTpButton = nil
+local mobileTpButtonCorner = nil
 local tpKey = Enum.KeyCode.LeftShift
 local waitingForKey = false
 local espEnabled = false
@@ -283,6 +286,17 @@ tpToggle = TpTab:CreateToggle({
     Name = "クリックTP", CurrentValue = false,
     Callback = function(v) clickTpEnabled = v end,
 })
+
+TpTab:CreateToggle({
+    Name = "スマホ用クリックTP", CurrentValue = false,
+    Callback = function(v)
+        mobileClickTpEnabled = v
+        if mobileTpButton then
+            mobileTpButton.Visible = v
+        end
+    end,
+})
+
 TpTab:CreateButton({
     Name = "TPキー変更",
     Callback = function() waitingForKey = true end,
@@ -909,12 +923,71 @@ UserInputService.JumpRequest:Connect(function()
     end
 end)
 
--- クリックTP
+-- クリックTP / スマホ タップTP
 mouse.Button1Down:Connect(function()
-    if clickTpEnabled then
+    if not clickTpEnabled then return end
+
+    local char = player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+
+    char:MoveTo(mouse.Hit.Position)
+end)
+
+-- スマホ用クリックTP
+-- 画面中央を狙って、画面下の大きなTPボタンを押す方式。
+-- 小さい場所を直接タップする必要がないので、スマホで操作しやすい。
+do
+    local isTouchDevice = UserInputService.TouchEnabled
+
+    mobileTpButton = Instance.new("TextButton")
+    mobileTpButton.Name = "MobileClickTPButton"
+    mobileTpButton.Size = UDim2.new(0, 150, 0, 58)
+    mobileTpButton.Position = UDim2.new(0.5, -75, 1, -105)
+    mobileTpButton.AnchorPoint = Vector2.new(0, 0)
+    mobileTpButton.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    mobileTpButton.BackgroundTransparency = 0.15
+    mobileTpButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    mobileTpButton.Text = "TP"
+    mobileTpButton.TextSize = 24
+    mobileTpButton.Font = Enum.Font.GothamBold
+    mobileTpButton.Visible = false
+    mobileTpButton.Active = true
+    mobileTpButton.AutoButtonColor = true
+    mobileTpButton.ZIndex = 50
+    mobileTpButton.Parent = screenGui
+
+    mobileTpButtonCorner = Instance.new("UICorner")
+    mobileTpButtonCorner.CornerRadius = UDim.new(0, 14)
+    mobileTpButtonCorner.Parent = mobileTpButton
+
+    local function MobileTeleportToCenter()
+        if not mobileClickTpEnabled then return end
+
         local char = player.Character
-        if char and char:FindFirstChild("HumanoidRootPart") then
-            char:MoveTo(mouse.Hit.Position)
+        if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+
+        local viewport = cam.ViewportSize
+        local center = Vector2.new(viewport.X / 2, viewport.Y / 2)
+        local ray = cam:ViewportPointToRay(center.X, center.Y)
+
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.FilterDescendantsInstances = {char}
+
+        local result = workspace:Raycast(ray.Origin, ray.Direction * 1000, rayParams)
+        if result then
+            char:MoveTo(result.Position)
         end
     end
-end)
+
+    mobileTpButton.Activated:Connect(MobileTeleportToCenter)
+
+    -- タッチ端末以外ではスマホ用ボタンを出さない。
+    -- トグルをONにしたときだけ表示する。
+    if not isTouchDevice then
+        mobileTpButton.Visible = false
+    end
+end
