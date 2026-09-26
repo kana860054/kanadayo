@@ -221,7 +221,7 @@ end
 -- Player タブ UI
 -- =====================================================================
 Tab:CreateToggle({ Name = "スピード", CurrentValue = false, Callback = function(v) speedEnabled = v end })
-Tab:CreateSlider({ Name = "足の速さ", Range = {16,150}, Increment = 1, CurrentValue = 16, Callback = function(v) currentSpeed = v end })
+Tab:CreateSlider({ Name = "足の速さ", Range = {16,2000}, Increment = 1, CurrentValue = 16, Callback = function(v) currentSpeed = v end })
 Tab:CreateToggle({ Name = "無限ジャンプ", CurrentValue = false, Callback = function(v) infJumpEnabled = v end })
 Tab:CreateToggle({ Name = "フライ", CurrentValue = false, Callback = function(v) flyEnabled = v end })
 Tab:CreateSlider({ Name = "フライ速度", Range = {10,200}, Increment = 5, CurrentValue = 50, Callback = function(v) flySpeed = v end })
